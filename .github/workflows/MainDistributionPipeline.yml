@@ -30,10 +30,10 @@ jobs:
     # PostHog fork of extension-ci-tools: internal actions are pinned to SHAs
     # (the PostHog org ruleset rejects unpinned action refs, even inside a
     # SHA-referenced reusable workflow) and it exposes the `runners` input.
-    uses: PostHog/extension-ci-tools/.github/workflows/_extension_distribution.yml@508d9a6bdc30636633857eaa916f474b9857bc1f
+    uses: PostHog/extension-ci-tools/.github/workflows/_extension_distribution.yml@d3e0ee09e2e392941f2e390e6cbab108a095daa4
     with:
       duckdb_version: ${{ needs.get-duckdb-version.outputs.duckdb_version }}
-      ci_tools_version: 508d9a6bdc30636633857eaa916f474b9857bc1f
+      ci_tools_version: d3e0ee09e2e392941f2e390e6cbab108a095daa4
       override_ci_tools_repository: PostHog/extension-ci-tools
       extension_name: httpfs
       runners: |
