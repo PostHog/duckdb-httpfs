@@ -32,8 +32,6 @@ jobs:
       duckdb_version: ${{ needs.get-duckdb-version.outputs.duckdb_version }}
       ci_tools_version: main
       extension_name: httpfs
-      runners: |
-        {"linux_amd64": "depot-ubuntu-24.04-16", "linux_arm64": "depot-ubuntu-24.04-arm-16"}
 
   publish-github-release:
     name: Publish GitHub Release assets
