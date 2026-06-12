@@ -246,7 +246,7 @@ void S3MultiPartUpload::FlushAllBuffers() {
 		// TODO (carlo): unclear how to handle kms_key_id, but given currently they are custom, leave the multiupload
 		// codepath in that case
 		auto &s3_input = http_input->Cast<S3HTTPInput>();
-		if (to_flush.size() == 1 && s3_input.auth_params.kms_key_id.empty()) {
+		if (to_flush.size() == 1 && s3_input.GetAuthParams().kms_key_id.empty()) {
 			UploadSingleBuffer(to_flush[0]);
 			upload_finalized = true;
 			return;

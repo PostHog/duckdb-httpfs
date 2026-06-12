@@ -20,6 +20,8 @@
 
 namespace duckdb {
 
+class DatabaseInstance;
+
 class S3KeyValueReader {
 public:
 	S3KeyValueReader(FileOpener &opener_p, optional_ptr<FileOpenerInfo> info, const char **secret_types,
@@ -121,6 +123,32 @@ public:
 
 	S3AuthParams auth_params;
 	S3ConfigParams config_params;
+
+	//! Where auth_params can be re-resolved from when a request fails with an
+	//! auth error mid-statement (set when the input is created from a
+	//! FileOpener that can reach the database; empty otherwise).
+	weak_ptr<DatabaseInstance> db;
+	string secret_path;
+
+	//! Returns a consistent copy of auth_params. Requests must sign from a
+	//! copy taken through this so a concurrent TryRefreshAuthParams cannot
+	//! tear a signature.
+	S3AuthParams GetAuthParams();
+
+	//! Re-resolves the LATEST COMMITTED secret matching secret_path and swaps
+	//! auth_params if the credentials changed. This deliberately bypasses the
+	//! calling statement's MVCC snapshot of the secret catalog: a statement
+	//! resolves its secret when it starts executing, so a CREATE OR REPLACE
+	//! SECRET committed by a concurrent connection (credential rotation) is
+	//! otherwise never visible to it, and a statement that outlives its
+	//! captured credentials dies with an auth error. Returns true if the
+	//! credentials changed (a retry with the new credentials is worthwhile).
+	bool TryRefreshAuthParams();
+
+private:
+	//! Guards auth_params against concurrent readers (e.g. parallel multipart
+	//! upload threads) while a refresh swaps it.
+	mutex auth_params_mutex;
 };
 
 class S3FileSystem;
