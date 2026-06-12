@@ -45,6 +45,14 @@ jobs:
       # The extension compiles cleanly and 5414/5416 assertions pass; the
       # IntegrationTests workflow and duckgres usage provide real coverage.
       skip_tests: true
+      # Windows is excluded: the windows-latest runner's MSVC (June 2026
+      # image) rejects duckdb v1.5.3's vendored third_party/fmt
+      # (stdext::checked_array_iterator was removed from the MSVC STL), so
+      # the windows leg fails on toolchain drift unrelated to our patches —
+      # and any failed leg blocks the release-publish job. PostHog only
+      # consumes the linux artifacts (Dockerfile/Dockerfile.worker download
+      # httpfs-linux-*).
+      exclude_archs: "windows_amd64;windows_amd64_mingw"
       # GitHub-hosted runners (public repo, free). Depot runners are not wired
       # to this fork — both arches registered a depot runner that never picked
       # up the job and was lost at the 10-min runner-unresponsive timeout.
