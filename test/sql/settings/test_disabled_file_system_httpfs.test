@@ -9,6 +9,9 @@ require no_extension_autoloading "EXPECTED: Test disable loading from local file
 statement ok
 PRAGMA enable_verification
 
+statement ok
+SET allow_persistent_secrets=false;
+
 require httpfs
 
 statement ok
