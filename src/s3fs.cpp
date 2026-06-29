@@ -311,6 +311,11 @@ static void OverlaySecretValue(const KeyValueSecret &secret, const string &key, 
 	}
 }
 
+static bool S3CredentialsChanged(const S3AuthParams &lhs, const S3AuthParams &rhs) {
+	return lhs.access_key_id != rhs.access_key_id || lhs.secret_access_key != rhs.secret_access_key ||
+	       lhs.session_token != rhs.session_token || lhs.oauth2_bearer_token != rhs.oauth2_bearer_token;
+}
+
 bool S3HTTPInput::TryRefreshAuthParams() {
 	if (secret_path.empty()) {
 		return false;
@@ -366,10 +371,7 @@ bool S3HTTPInput::TryRefreshAuthParams() {
 
 	// Only a credential change makes a retry worthwhile; anything else means
 	// the auth failure has a different cause and must surface to the caller.
-	bool credentials_changed = refreshed.access_key_id != auth_params.access_key_id ||
-	                           refreshed.secret_access_key != auth_params.secret_access_key ||
-	                           refreshed.session_token != auth_params.session_token ||
-	                           refreshed.oauth2_bearer_token != auth_params.oauth2_bearer_token;
+	bool credentials_changed = S3CredentialsChanged(refreshed, auth_params);
 	if (!credentials_changed) {
 		return false;
 	}
@@ -377,19 +379,46 @@ bool S3HTTPInput::TryRefreshAuthParams() {
 	return true;
 }
 
+static bool IsS3ExpiredTokenBody(const string &body) {
+	return body.find("<Code>ExpiredToken</Code>") != string::npos;
+}
+
+static bool IsS3ExpiredTokenResponse(const HTTPResponse &response) {
+	return response.status == HTTPStatusCode::BadRequest_400 && IsS3ExpiredTokenBody(response.body);
+}
+
+static bool TryRefreshOrObserveCredentialChange(S3HTTPInput &s3_input, const S3AuthParams &attempt_auth_params) {
+	if (s3_input.TryRefreshAuthParams()) {
+		return true;
+	}
+	return S3CredentialsChanged(attempt_auth_params, s3_input.GetAuthParams());
+}
+
 //! Run an S3 request; when it fails with an auth-shaped HTTP error (400/403 —
 //! expired STS tokens surface as 400 "ExpiredToken", revoked or invalid keys
 //! as 403), re-resolve the latest committed secret and retry once with the
-//! refreshed credentials. This is what lets a statement that runs longer than
-//! its captured credentials' lifetime survive, provided something (e.g. an
-//! external credential rotation) has committed a fresh secret in the
-//! meantime. The attempt callback must re-read auth params through
-//! S3HTTPInput::GetAuthParams so the retry signs with the refreshed
-//! credentials. Non-auth errors and auth errors with unchanged credentials
-//! propagate unchanged.
-static unique_ptr<HTTPResponse> RunWithCredentialRefresh(S3HTTPInput &s3_input,
-                                                         const std::function<unique_ptr<HTTPResponse>()> &attempt) {
+//! refreshed credentials. Some write requests return a 400 response instead of
+//! throwing, so callers can also identify refreshable response bodies. Returned
+//! ExpiredToken responses retry after a credential change, including the case
+//! where another parallel request already refreshed the shared credentials. This
+//! is what lets a statement that runs longer than its captured credentials'
+//! lifetime survive, provided something (e.g. an external credential rotation)
+//! has committed a fresh secret in the meantime. The attempt callback must
+//! re-read auth params through S3HTTPInput::GetAuthParams so the retry signs
+//! with the refreshed credentials. Non-auth errors and auth errors with
+//! unchanged credentials propagate unchanged.
+static unique_ptr<HTTPResponse>
+RunWithCredentialRefresh(S3HTTPInput &s3_input, const std::function<unique_ptr<HTTPResponse>()> &attempt,
+                         const std::function<bool(const HTTPResponse &)> &is_refreshable_response) {
+	auto attempt_auth_params = s3_input.GetAuthParams();
 	try {
+		auto response = attempt();
+		if (!response || !is_refreshable_response(*response)) {
+			return response;
+		}
+		if (!TryRefreshOrObserveCredentialChange(s3_input, attempt_auth_params)) {
+			return response;
+		}
 		return attempt();
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
@@ -401,11 +430,16 @@ static unique_ptr<HTTPResponse> RunWithCredentialRefresh(S3HTTPInput &s3_input,
 		if (entry == extra_info.end() || (entry->second != "400" && entry->second != "403")) {
 			throw;
 		}
-		if (!s3_input.TryRefreshAuthParams()) {
+		if (!TryRefreshOrObserveCredentialChange(s3_input, attempt_auth_params)) {
 			throw;
 		}
 		return attempt();
 	}
+}
+
+static unique_ptr<HTTPResponse> RunWithCredentialRefresh(S3HTTPInput &s3_input,
+                                                         const std::function<unique_ptr<HTTPResponse>()> &attempt) {
+	return RunWithCredentialRefresh(s3_input, attempt, IsS3ExpiredTokenResponse);
 }
 
 S3FileHandle::S3FileHandle(FileSystem &fs, const OpenFileInfo &file, FileOpenFlags flags,
@@ -681,6 +715,8 @@ unique_ptr<HTTPResponse> S3FileSystem::PostRequest(HTTPInput &input, string url,
 		}
 
 		return HTTPFileSystem::PostRequest(input, http_url, headers, result, buffer_in, buffer_in_len);
+	}, [&](const HTTPResponse &response) {
+		return response.status == HTTPStatusCode::BadRequest_400 && IsS3ExpiredTokenBody(result);
 	});
 }
 
